@@ -202,33 +202,36 @@ void kvm_clean_vm(struct kvm *kvm) {
     munmap((void *)kvm->ram_start, kvm->ram_size);
 }
 
-struct vcpu *kvm_init_vcpu(struct kvm *kvm, int vcpu_id, void *(*fn)(void *)) {
-    struct vcpu *vcpu = malloc(sizeof(struct vcpu));
-    vcpu->vcpu_id = 0;
-    vcpu->vcpu_fd = ioctl(kvm->vm_fd, KVM_CREATE_VCPU, vcpu->vcpu_id);
-
-    if (vcpu->vcpu_fd < 0) {
-        perror("can not create vcpu");
-        return NULL;
+struct vcpu *kvm_init_vcpu(struct kvm *kvm, int vcpu_num, void *(*fn)(void *)) {
+    struct vcpu *vcpus = malloc(sizeof(struct vcpu) * vcpu_num);
+    for (int vcpu_id = 0; vcpu_id < vcpu_num; vcpu_id ++) {
+        struct vcpu *vcpu = &vcpus[vcpu_id];
+        vcpu->vcpu_id = vcpu_id;
+        vcpu->vcpu_fd = ioctl(kvm->vm_fd, KVM_CREATE_VCPU, vcpu->vcpu_id);
+    
+        if (vcpu->vcpu_fd < 0) {
+            perror("can not create vcpu");
+            return NULL;
+        }
+    
+        vcpu->kvm_run_mmap_size = ioctl(kvm->dev_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
+    
+        if (vcpu->kvm_run_mmap_size < 0) {
+            perror("can not get vcpu mmsize");
+            return NULL;
+        }
+    
+        printf("%d\n", vcpu->kvm_run_mmap_size);
+        vcpu->kvm_run = mmap(NULL, vcpu->kvm_run_mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED, vcpu->vcpu_fd, 0);
+    
+        if (vcpu->kvm_run == MAP_FAILED) {
+            perror("can not mmap kvm_run");
+            return NULL;
+        }
+    
+        vcpu->vcpu_thread_func = fn;
     }
-
-    vcpu->kvm_run_mmap_size = ioctl(kvm->dev_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
-
-    if (vcpu->kvm_run_mmap_size < 0) {
-        perror("can not get vcpu mmsize");
-        return NULL;
-    }
-
-    printf("%d\n", vcpu->kvm_run_mmap_size);
-    vcpu->kvm_run = mmap(NULL, vcpu->kvm_run_mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED, vcpu->vcpu_fd, 0);
-
-    if (vcpu->kvm_run == MAP_FAILED) {
-        perror("can not mmap kvm_run");
-        return NULL;
-    }
-
-    vcpu->vcpu_thread_func = fn;
-    return vcpu;
+    return vcpus;
 }
 
 void kvm_clean_vcpu(struct vcpu *vcpu) {
@@ -265,9 +268,12 @@ int main(int argc, char **argv) {
 
     load_binary(kvm);
 
-    // only support one vcpu now
-    kvm->vcpu_number = 1;
-    kvm->vcpus = kvm_init_vcpu(kvm, 0, kvm_cpu_thread);
+    kvm->vcpu_number = (argc == 2 ? atoi(argv[1]) : 2);
+    if (kvm->vcpu_number <= 0) {
+        fprintf(stderr, "vcpu number should be >= 1\n");
+        return -1;
+    }
+    kvm->vcpus = kvm_init_vcpu(kvm, kvm->vcpu_number, kvm_cpu_thread);
 
     kvm_run_vm(kvm);
 
